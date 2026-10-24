@@ -3,6 +3,28 @@
 This file tells an AI coding agent (OpenAI Codex, Claude Code, Cursor, Windsurf, Devin, etc.)
 how to set up and run this project for the user. Follow it top to bottom.
 
+## Branch and runtime workflow (user requirement)
+
+- The user's everyday checkout and running service use `develop`. Keep this checkout on
+  `develop` with all completed fixes merged, and leave it clean when finishing work.
+- Keep `main` as the upstream baseline. Fetch before starting work and update `main` only
+  by fast-forwarding to `origin/main`; do not commit feature work directly to `main`.
+- For each new feature or fix, create a separate, descriptive `fix/<topic>` branch from
+  the latest `main`. Use an isolated worktree so editing the feature does not change the
+  files served by the user's running `develop` checkout. Inspect existing worktrees first.
+- Keep each fix independently suitable for a pull request to the source repository's
+  `main`. Do not branch from `develop` or merge unrelated fixes into a feature branch.
+  If a feature needs another unmerged fix, explain the dependency and keep its scope clear.
+- Validate and commit the fix, then merge it into `develop` with `--no-ff`. Resolve merge
+  conflicts on `develop`, preserving both features. Keep fix branches for future PRs.
+- Include all intended local and remote `fix/*` branches in `develop`; check ancestry
+  and the integrated behavior instead of assuming that a successful merge is sufficient.
+- After merging application changes, restart the service from this `develop` checkout
+  using its `.venv`, verify `/api/health` and affected features, and return to `develop`.
+  The desktop launcher at `.local-run/start-desktop.ps1` is local runtime configuration.
+- PRs should use the relevant `fix/*` branch, rather than `develop`, as their source.
+  Preserve credentials, recordings, model files, and other ignored local runtime data.
+
 This is a **web app with a local Python backend** (FastAPI + uvicorn). Frontend is a single
 static `index.html` served by the backend. No build step, no database.
 
