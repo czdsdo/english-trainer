@@ -15,6 +15,10 @@ how to set up and run this project for the user. Follow it top to bottom.
 - Keep each fix independently suitable for a pull request to the source repository's
   `main`. Do not branch from `develop` or merge unrelated fixes into a feature branch.
   If a feature needs another unmerged fix, explain the dependency and keep its scope clear.
+- Before an upstream PR, fetch the source repository and compare against its actual
+  `upstream/main`, not just the fork's `main`. If the fork contains unrelated, unmerged
+  commits, prepare the fix on `upstream/main` in an isolated worktree. Keep local agent
+  workflow changes on `develop`; never include them in feature PRs.
 - Validate and commit the fix, then merge it into `develop` with `--no-ff`. Resolve merge
   conflicts on `develop`, preserving both features. Keep fix branches for future PRs.
 - Include all intended local and remote `fix/*` branches in `develop`; check ancestry
