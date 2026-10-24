@@ -433,6 +433,10 @@ function prefetch(text){ if(text) ttsFetch(text,state.rate).catch(()=>{}); }   /
 function stopHighlight(){ if(rafId)cancelAnimationFrame(rafId); rafId=null;
   hlSpans.forEach(s=>s.classList.remove('cur')); hlSpans=[]; hlTimes=[]; }
 function startTick(){
+  if(rafId)cancelAnimationFrame(rafId);
+  rafId=null;
+  // 拖动进度条或暂停续播会重启此循环，先清除上一次留下的高亮。
+  hlSpans.forEach(s=>s.classList.remove('cur'));
   let prev=-1;
   const tick=()=>{ const ct=player.currentTime; let idx=-1;
     for(let i=0;i<hlTimes.length;i++){ if(hlTimes[i]<=ct) idx=i; else break; }
@@ -443,7 +447,7 @@ function startTick(){
     }
     rafId = (player.paused || player.ended) ? null : requestAnimationFrame(tick);  // 暂停/结束就停，别永远空转
   };
-  if(rafId)cancelAnimationFrame(rafId); rafId=requestAnimationFrame(tick);
+  tick();  // 立即同步当前位置；暂停拖动时也不依赖下一帧。
 }
 player.addEventListener('ended',stopHighlight);
 // 视频原声：放到片段结束点就停（单句模式用；连读模式 _stopAt=null 一路放到底）
