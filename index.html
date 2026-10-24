@@ -233,6 +233,11 @@
         <div class="speed">语速 <input type="range" id="rate" min="0" max="100" step="1" value="50"> <span id="rateVal">1.0x</span></div>
         <button class="ghost" id="loopBtn" title="循环播放当前句，每遍之间留空隙给你写">循环</button>
       </div>
+      <div id="flowTimeline" class="row" style="display:none; margin:12px 0; gap:10px;">
+        <span id="flowCurrent" class="muted" style="min-width:42px;">0:00</span>
+        <input id="flowSeek" type="range" min="0" max="1000" step="1" value="0" disabled aria-label="连读播放进度" style="flex:1; min-width:80px; accent-color:var(--blue);">
+        <span id="flowDuration" class="muted" style="min-width:42px; text-align:right;">0:00</span>
+      </div>
       <div class="sentence" id="sentence"></div>
       <div class="controls" id="navRow">
         <button class="ghost" id="prev">← 上一句</button>
@@ -344,18 +349,73 @@ function pickVoice(lang){
     || voices.find(v=>v.lang&&v.lang.replace('_','-')===lang)
     || voices.find(v=>v.lang&&v.lang.startsWith(lang.slice(0,2))) || null;
 }
-function browserSpeak(text,rate){
+function browserSpeak(text,rate,flowOffset=0){
   stopWordComparison();
   recordingPlayer.pause();
   speechSynthesis.cancel();
   const u=new SpeechSynthesisUtterance(text); u.lang=state.accent; u.rate=rate;
   const v=pickVoice(state.accent); if(v)u.voice=v;
-  u.onstart=()=>setPlayBtn(true);
-  u.onend=()=>{ setPlayBtn(false); scheduleLoop(); };
+  const isFlow=state.mode==='flow' && !player._word;
+  if(isFlow) flowSpeech={position:flowOffset, paused:false, active:true};
+  u.onstart=()=>setPlayBtn(!(isFlow && flowSpeech && flowSpeech.paused));
+  if(isFlow) u.onboundary=e=>{
+    if(flowSpeech){ flowSpeech.position=flowOffset+e.charIndex; updateFlowTimeline(); }
+  };
+  u.onend=()=>{
+    if(isFlow && flowSpeech){ flowSpeech.position=flowText.length; flowSpeech.active=false; updateFlowTimeline(); }
+    setPlayBtn(false); scheduleLoop();
+  };
   speechSynthesis.speak(u);
 }
 
 const player=new Audio();
+// Playback state and timeline are used only by continuous reading.
+let flowSpeech=null;
+function flowPlaybackKey(){
+  return state.source==='video' ? 'video|'+state.audioUrl : 'tts|'+ttsKey(flowText,state.rate);
+}
+function flowTime(seconds){
+  seconds=Math.max(0,Math.floor(seconds||0));
+  return Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0');
+}
+function updateFlowTimeline(){
+  const box=document.getElementById('flowTimeline');
+  box.style.display=state.mode==='flow'?'flex':'none';
+  if(state.mode!=='flow') return;
+  const seek=document.getElementById('flowSeek');
+  const current=document.getElementById('flowCurrent'), total=document.getElementById('flowDuration');
+  if(flowSpeech){
+    const fraction=flowText.length?flowSpeech.position/flowText.length:0;
+    seek.disabled=false; seek.value=Math.round(fraction*1000);
+    current.textContent=Math.round(fraction*100)+'%'; total.textContent='全文';
+    return;
+  }
+  const start=state.source==='video' && state.timing?.length ? state.timing[0].start : 0;
+  const duration=player._flowKey===flowPlaybackKey() && Number.isFinite(player.duration) ? Math.max(0,player.duration-start) : 0;
+  seek.disabled=!duration;
+  const elapsed=Math.max(0,Math.min(duration,player.currentTime-start));
+  seek.value=duration?Math.round(elapsed/duration*1000):0;
+  current.textContent=flowTime(elapsed); total.textContent=flowTime(duration);
+}
+function seekFlow(){
+  if(state.mode!=='flow') return;
+  const fraction=Number(document.getElementById('flowSeek').value)/1000;
+  if(flowSpeech){
+    const paused=flowSpeech.paused || !flowSpeech.active;
+    let offset=Math.min(Math.floor(fraction*flowText.length),Math.max(0,flowText.length-1));
+    while(offset>0 && /\S/.test(flowText[offset-1])) offset--;
+    browserSpeak(flowText.slice(offset),state.rate,offset);
+    if(paused){ flowSpeech.paused=true; speechSynthesis.pause(); setPlayBtn(false); }
+    updateFlowTimeline(); return;
+  }
+  if(player._flowKey!==flowPlaybackKey() || !Number.isFinite(player.duration)) return;
+  const start=state.source==='video' && state.timing?.length ? state.timing[0].start : 0;
+  player.currentTime=start+fraction*Math.max(0,player.duration-start);
+  player._atEnd=false;
+  startTick(); updateFlowTimeline();
+}
+document.getElementById('flowSeek').addEventListener('input',seekFlow);
+for(const event of ['loadedmetadata','durationchange','timeupdate','seeked','ended']) player.addEventListener(event,updateFlowTimeline);
 const ttsCache=new Map();        // key -> {url, marks}，缓存已合成音频
 let hlSpans=[], hlTimes=[], rafId=null;
 function b64url(b64,mime){ const bin=atob(b64),u8=new Uint8Array(bin.length);
@@ -429,6 +489,7 @@ async function speak(text,opts={}){
   const myGen=++playGen;
   const rate=opts.rate!=null?opts.rate:state.rate;
   if(loopTimer){ clearTimeout(loopTimer); loopTimer=null; }   // 新发音取代待执行的循环重播
+  if(state.mode==='flow'){ flowSpeech=null; player._flowKey=null; }
   player._word=!!opts.word;        // 单词发音：播完不要触发整句循环
   stopHighlight();
   player.pause();                 // 立刻停掉上一段，避免叠音
@@ -506,12 +567,13 @@ function alignTimes(words,marks){
 }
 async function playFlow(){
   const spans=[...document.querySelectorAll('#sentence .fw')];
-  await speak(flowText,{ onmarks:(marks)=>{ hlSpans=spans;
+  await speak(flowText,{ onmarks:(marks)=>{ player._flowKey=flowPlaybackKey(); updateFlowTimeline(); hlSpans=spans;
     hlTimes=alignTimes(spans.map(s=>normW(s.textContent)),marks); } });
   startTick();
 }
 // 视频连读：放整段原声，按句级时间戳高亮当前句
 function playFlowVideo(){
+  flowSpeech=null; player._flowKey=flowPlaybackKey();
   const spans=[...document.querySelectorAll('#sentence .fw')];
   stopHighlight(); player.pause(); speechSynthesis.cancel();
   player._word=false;
@@ -519,7 +581,7 @@ function playFlowVideo(){
   player.playbackRate=state.rate; player._stopAt=null; player._atEnd=false;
   try{ player.currentTime=state.timing[0].start; }catch(e){}
   player.play().catch(()=>{});
-  hlSpans=spans; hlTimes=state.timing.map(s=>s.start); startTick();
+  hlSpans=spans; hlTimes=state.timing.map(s=>s.start); startTick(); updateFlowTimeline();
 }
 function playFlowAny(){
   loopBlocked=false;
@@ -531,6 +593,7 @@ function render(){ clearShadowRecording(); updateProgress();
   if(state.mode==='flow'){ renderFlow(); if(state.source!=='video') prefetch(flowText); }
   else { renderSentence();
     if(state.source!=='video'){ prefetch(state.sentences[state.idx]); prefetch(state.sentences[state.idx+1]); } }
+  updateFlowTimeline();
 }
 
 // ---- 点单词 ----
@@ -984,6 +1047,7 @@ document.addEventListener('keydown',e=>{
 
 // ---- 模式切换 ----
 function setMode(mode){
+  flowSpeech=null; player._flowKey=null;
   player.pause(); speechSynthesis.cancel();
   if(loopTimer){ clearTimeout(loopTimer); loopTimer=null; }
   const old=state.mode;
@@ -1033,7 +1097,25 @@ document.getElementById('loopBtn').onclick=()=>{
     state.mode==='flow' ? playFlowAny() : playSentence(state.idx);
   }
 };
+function toggleFlowPlayback(){
+  if(!player.paused || (flowSpeech?.active && !flowSpeech.paused) || loopTimer){
+    loopBlocked=true;
+    if(loopTimer){ clearTimeout(loopTimer); loopTimer=null; }
+    if(flowSpeech?.active){ flowSpeech.paused=true; speechSynthesis.pause(); }
+    else player.pause();
+    setPlayBtn(false); return;
+  }
+  loopBlocked=false;
+  if(flowSpeech?.active && flowSpeech.paused){
+    flowSpeech.paused=false; speechSynthesis.resume(); setPlayBtn(true); return;
+  }
+  if(player._flowKey===flowPlaybackKey() && !player._word && !player.ended && !player._atEnd){
+    player.play().catch(()=>{}); return;
+  }
+  playFlowAny();
+}
 playBtn.onclick=()=>{
+  if(state.mode==='flow'){ toggleFlowPlayback(); return; }
   // 正在放、或正处于循环间隙(等着自动重播) → 一律停下，并取消待执行的循环重播
   if(!player.paused || speechSynthesis.speaking || loopTimer){
     loopBlocked=true;
